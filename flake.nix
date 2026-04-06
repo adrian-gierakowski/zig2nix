@@ -4,12 +4,15 @@
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs";
     flake-utils.url = "github:numtide/flake-utils";
+    flake-compat = {
+      url = "github:NixOS/flake-compat";
+      flake = false;
+    };
   };
 
   outputs = { self, flake-utils, ... }: with builtins; let
-    outputs = (flake-utils.lib.eachDefaultSystem (system: let
-      # Used only for top level stuff, everything else should be done with env.pkgs
-      _callPackage = self.inputs.nixpkgs.outputs.legacyPackages.${system}.callPackage;
+    makeZig2Nix = pkgs: system: let
+      _callPackage = pkgs.callPackage;
 
       #! Structures.
 
@@ -43,16 +46,20 @@
 
       #:! Helper function for building and running Zig projects.
       zig-env = {
-        # Overrideable nixpkgs.
-        nixpkgs ? self.inputs.nixpkgs,
+        # Overrideable nixpkgs flake.
+        nixpkgs ? null,
         # Zig version to use.
         zig ? zigv.latest,
-      }: with nixpkgs.lib; let
+      }: let
+        currentNixpkgs = if nixpkgs != null then nixpkgs else self.inputs.nixpkgs;
+        currentPkgs = if nixpkgs != null then nixpkgs.outputs.legacyPackages.${system} else pkgs;
+      in with currentPkgs.lib; let
         #! --- Outputs of zig-env {} function.
         #!     access: (zig-env {}).thing
 
         # Use provided nixpkgs in here.
-        pkgs = nixpkgs.outputs.legacyPackages.${system};
+        pkgs = currentPkgs;
+        nixpkgs = currentNixpkgs;
 
         #! Tools for bridging zig and nix
         #! The correct zig version is put into the PATH
@@ -195,6 +202,16 @@
         #! Bundle a package for running in AWS lambda
         bundle.aws.lambda = pkgs.callPackage ./src/bundle/lambda.nix { bundleZip = bundle.zip; };
       };
+    in {
+      inherit zigv zig-env zigHook zig2nix-zigless;
+    };
+
+    outputs = (flake-utils.lib.eachDefaultSystem (system: let
+      # Used only for top level stuff, everything else should be done with env.pkgs
+      pkgs = self.inputs.nixpkgs.outputs.legacyPackages.${system};
+      _callPackage = pkgs.callPackage;
+      out = makeZig2Nix pkgs system;
+      inherit (out) zigv zig-env zigHook zig2nix-zigless;
 
       test-env = zig-env { zig = zigv.latest; };
       test-env-0_14 = zig-env { zig = zigv."0_14_1"; };
@@ -411,6 +428,10 @@
   in outputs // {
     #! --- Generic flake outputs.
     #!     access: `zig2nix.outputs.thing`
+
+    overlays.default = final: prev: let
+      out = makeZig2Nix prev prev.stdenv.hostPlatform.system;
+    in out;
 
     #! Default project template
     #! nix flake init -t templates
